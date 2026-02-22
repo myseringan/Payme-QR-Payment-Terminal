@@ -13,17 +13,15 @@
 
 ## Overview
 
-A production payment system for unattended vending machines in Uzbekistan. The customer selects a product on a touchscreen, a QR code appears, they scan it with the Payme app, and the machine dispenses the product automatically.
-
-**Real-world deployment:** perfume vending machine ("Street Aroma") with 4 product slots, LVGL touchscreen UI, and remote price management.
+A production-ready payment system for unattended vending machines and IoT devices in Uzbekistan. The ESP32 displays a Payme QR code, the customer scans and pays, and the device activates automatically.
 
 **What it does:**
 
-* Generates Payme checkout QR codes on an ESP32 touchscreen display
+* Generates Payme checkout QR codes on an ESP32
 * Processes payments through Payme's JSON-RPC API (CheckPerform → Create → Perform → Cancel)
 * Notifies the ESP32 via MQTT in real time when payment is confirmed
 * Manages product prices remotely through a REST API
-* Handles transaction lifecycle: creation, confirmation, cancellation, refunds
+* Handles full transaction lifecycle: creation, confirmation, cancellation, refunds
 
 ---
 
@@ -33,9 +31,9 @@ A production payment system for unattended vending machines in Uzbekistan. The c
 ┌──────────────────┐         ┌───────────────────┐         ┌──────────────┐
 │   ESP32 Device   │  HTTPS  │   Flask Server     │  HTTP   │  Payme API   │
 │                  │────────►│                    │◄───────►│              │
-│ LVGL Touchscreen │         │ /create-order      │         │ JSON-RPC     │
-│ QR Code Display  │◄──MQTT──│ /payme (webhook)   │         │ Webhook      │
-│ Pump Control     │         │ /api/prices        │         │              │
+│ QR Display       │         │ /create-order      │         │ JSON-RPC     │
+│ Output Control   │◄──MQTT──│ /payme (webhook)   │         │ Webhook      │
+│                  │         │ /api/prices        │         │              │
 └──────────────────┘         └────────┬───────────┘         └──────────────┘
                                       │
                                       │ MQTT (HiveMQ)
@@ -53,14 +51,14 @@ A production payment system for unattended vending machines in Uzbekistan. The c
 
 ## Payment Flow
 
-1. **Customer** selects a product on the ESP32 touchscreen
-2. **ESP32** sends `POST /api/create-perfume-order` to the server
+1. **Customer** selects a product (button, touchscreen, or Serial command)
+2. **ESP32** sends `POST /api/create-order` to the server
 3. **Server** generates a Payme checkout URL and publishes it via MQTT
-4. **ESP32** receives the MQTT message, renders a QR code on screen
+4. **ESP32** receives the MQTT message, displays the QR code
 5. **Customer** scans QR with the Payme app and pays
 6. **Payme** calls the server webhook: `CheckPerformTransaction` → `CreateTransaction` → `PerformTransaction`
 7. **Server** publishes `{"status": "confirmed"}` via MQTT
-8. **ESP32** receives confirmation, activates the pump, dispenses product
+8. **ESP32** receives confirmation, activates the output (relay, pump, LED, etc.)
 
 ---
 
@@ -68,11 +66,11 @@ A production payment system for unattended vending machines in Uzbekistan. The c
 
 | Layer | Technology | Description |
 |-------|------------|-------------|
-| Firmware | C++ / Arduino | ESP32 with LVGL UI, MQTT client, QR generation |
+| Firmware | C++ / Arduino | ESP32 MQTT client, order management, output control |
 | Server | Python / Flask | Payme webhook handler, REST API, MQTT publisher |
 | Messaging | MQTT / HiveMQ | Real-time ESP32 ↔ Server communication |
 | Payment | Payme JSON-RPC | Full transaction lifecycle (Uzbekistan market) |
-| Storage | JSON files + NVS | Server transactions + ESP32 price cache |
+| Storage | JSON files + NVS | Server transactions + ESP32 config cache |
 
 ---
 
@@ -81,8 +79,7 @@ A production payment system for unattended vending machines in Uzbekistan. The c
 ```
 Payme-QR-Payment-Terminal/
 ├── firmware/
-│   ├── Payme_QR_ESP32.ino    # Main ESP32 sketch (simple MQTT listener)
-│   └── payment.cpp           # Full implementation: QR gen, MQTT, orders, prices
+│   └── Payme_QR_ESP32.ino    # ESP32 sketch: MQTT, orders, output control
 │
 ├── server/
 │   └── app.py                # Flask server: Payme webhook + MQTT + REST API
@@ -95,32 +92,33 @@ Payme-QR-Payment-Terminal/
 
 ## Firmware (ESP32)
 
-The firmware handles two main tasks:
-
 **MQTT Communication** — Subscribes to `payments/{merchant_id}` and reacts to:
-- `created` → generates QR code and displays it on screen
-- `confirmed` → activates product dispensing
-- `cancelled` → shows error screen and resets
+- `created` → QR URL ready to display
+- `confirmed` → activates output pin (relay/pump/LED)
+- `cancelled` → resets state
 
-**QR Code Generation** — Renders Payme checkout URLs directly on the LVGL display using RGB565 pixel buffer in PSRAM.
+**Order Management** — Creates orders via HTTPS, auto-cancels after 3-minute timeout.
 
-**Price Sync** — Periodically fetches current prices from the server via HTTPS and caches them in NVS (non-volatile storage).
+**Serial Commands** — Built-in test interface:
+- `pay1` / `pay2` / `pay3` — create test orders
+- `cancel` — cancel current order
+- `status` — print current state
 
 ### Key Functions
 
 | Function | Description |
 |----------|-------------|
-| `createOrder(parfumId, price)` | Sends order request to server |
-| `generateQrToImage(url)` | Renders QR code on LVGL display |
-| `mqtt_callback()` | Handles payment status updates |
-| `pollPrices()` | Syncs prices from server |
+| `createOrder(productId, price)` | Sends order to server, triggers QR flow |
+| `mqtt_callback()` | Handles payment status from MQTT |
+| `activateOutput(amount)` | Turns on relay/LED on confirmed payment |
 | `cancelOrder()` | Cancels pending order |
+| `checkPaymentTimeout()` | Auto-cancel after 3 minutes |
 
 ---
 
 ## Server (Flask)
 
-### Payme Webhook Endpoints
+### Payme Webhook
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -139,8 +137,8 @@ Supported Payme methods:
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/create-perfume-order` | ESP32 creates order, gets QR URL |
-| POST | `/api/cancel-perfume-order` | Cancel pending order |
+| POST | `/api/create-order` | ESP32 creates order, gets QR URL back via MQTT |
+| POST | `/api/cancel-order` | Cancel pending order |
 | GET | `/api/prices` | Get product prices |
 | POST | `/api/prices` | Update product prices (admin) |
 | GET | `/api/orders` | List all orders |
@@ -181,10 +179,11 @@ python app.py
 
 Update WiFi and MQTT settings in the firmware:
 ```cpp
-const char* ssid = "Your_WiFi";
-const char* password = "Your_Password";
+const char* ssid        = "Your_WiFi";
+const char* password    = "Your_Password";
 const char* mqtt_server = "broker.hivemq.com";
-const char* mqtt_topic = "payments/your_merchant_id";
+const char* merchant_id = "your_merchant_id";
+const char* server_url  = "https://your-server.com/api";
 ```
 
 Flash with Arduino IDE or PlatformIO.
@@ -202,13 +201,10 @@ https://your-server.com/payme
 # Test MQTT connection
 curl -X POST http://localhost:3002/test-mqtt
 
-# Simulate payment
+# Simulate full payment
 curl -X POST http://localhost:3002/test-full-payment
 
-# Create order (as ESP32 would)
-curl -X POST http://localhost:3002/api/create-perfume-order \
-  -H "Content-Type: application/json" \
-  -d '{"device_id": "esp32-01", "parfum_id": 1, "amount": 5000}'
+# Or use Serial monitor: type "pay1" and press Enter
 ```
 
 ---
@@ -218,7 +214,7 @@ curl -X POST http://localhost:3002/api/create-perfume-order \
 - Payme authentication via Base64-encoded credentials (Basic Auth)
 - `TEST_MODE` flag switches between test and production keys
 - `DEBUG_ALLOW_ANY` bypasses auth (development only, never use in production)
-- WiFi credentials and API keys should be stored in `.env` / `pre.h`, not hardcoded
+- WiFi credentials and API keys should be stored in `.env`, not hardcoded
 
 ---
 
