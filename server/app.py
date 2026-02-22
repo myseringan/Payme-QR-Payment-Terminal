@@ -18,9 +18,9 @@ app = Flask(__name__)
 
 # ============ КОНФИГУРАЦИЯ ============
 # Payme credentials
-MERCHANT_ID = os.getenv("MERCHANT_ID", "6903415b33df8ed4e617e6f7")
-SECRET_KEY = os.getenv("PAYME_KEY", "K@KCpTGo4WRerp12Bvps?h5K40oO7z2?RKvm")
-TEST_KEY = os.getenv("PAYME_TEST_KEY", "WNA7fKyVfUeADBBY8my0zQk&#fH90cP3C5&7")
+MERCHANT_ID = os.getenv("MERCHANT_ID", "")
+SECRET_KEY = os.getenv("PAYME_KEY", "")
+TEST_KEY = os.getenv("PAYME_TEST_KEY", "")
 
 # MQTT настройки (как в твоём Node.js)
 MQTT_BROKER = os.getenv("MQTT_BROKER", "broker.hivemq.com")
@@ -872,4 +872,5 @@ if __name__ == '__main__':
 ║    - GET  /debug-mqtt
 ╚══════════════════════════════════════════════════════╝
 """)
+
     app.run(host='0.0.0.0', port=3002, debug=True)
